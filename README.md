@@ -70,7 +70,7 @@ Drop your desired images into the <strong>sprays</strong> folder <em>(See suppor
 
 ---
 
-## Name modifiers (Nametags)
+## Name modifiers (Name flags)
 
 <details>
 <summary>Click to expand</summary>
@@ -237,8 +237,8 @@ source image no longer exists in `sprays/`. Corresponding entries in
 
 > **[EXPERIMENTAL]** Servers cache sprays in `custom.hpk`. The change may
 > not be immediately visible after retry or rejoin to the same server.
-> For best results use the `kill` command in-game before spraying, or
-> reconnect from the server browser so the server re-sends the cache.
+> For best results
+> reconnect from the server browser so the client re-sends the cache.
 
 When `true`, hlgraff stays alive after launching the game and applies a new
 spray every `cycle-delay` seconds for as long as the game process is running.

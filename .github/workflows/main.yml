@@ -1,0 +1,81 @@
+name: CI/CD Pipeline - hlgraff Build & Sign
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          
+      - name: Extract Version
+        id: get_version
+        shell: powershell
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $ver = $tag.TrimStart('v')
+          echo "VERSION=$ver" >> $env:GITHUB_OUTPUT
+          $verComma = $ver
+          if ($ver.Split('.').Count -lt 4) { $verComma += ".0" * (4 - $ver.Split('.').Count) }
+          echo "VERSION_COMMA=$($verComma.Replace('.', ','))" >> $env:GITHUB_OUTPUT
+
+      - name: Add MSBuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build Solution
+        run: |
+          msbuild src\hlgraff.sln /p:Configuration=Release /p:Platform=x86 `
+          /p:DefineConstants="FILE_VERSION_STR=\\\"${{ steps.get_version.outputs.VERSION }}\\\";PRODUCT_VERSION_STR=\\\"${{ steps.get_version.outputs.VERSION }}\\\""
+          
+      - name: Prepare Package
+        shell: powershell
+        run: |
+          $ver = "${{ steps.get_version.outputs.VERSION }}"
+          
+          $exeFile = Get-ChildItem -Path "src" -Filter "hlgraff.exe" -Recurse | Select-Object -First 1
+          if (-not $exeFile) { Write-Error "No se encontró hlgraff.exe"; exit 1 }
+
+          mkdir dist_zip
+          mkdir dist_zip\sprays
+          
+          cp $exeFile.FullName dist_zip\
+          cp "sprays\hlgraff_logo.png" dist_zip\sprays\
+          
+          $iniContent = @"
+          method=sequential               ;random/sequential/static
+          include-mods=true               ;true/false -> sets the spray on the modfolder based on -game parameter
+          sprayname=                      ;name.wad/name.png/name.jpg -> only needed when method=static
+          launch=hl.exe                   ;executable to launch after applying the spray
+          size=large                      ;large (default)/medium/small -> controls output spray resolution
+          convert-autodeletion=true       ;true/false -> auto-delete converted wads when source image is gone
+          
+          
+          ; [EXPERIMENTAL] servers cache sprays in custom.hpk so the change is not always
+          ;   visible immediately. retry/rejoin to the same server may not reflect the new
+          ;   spray. for best results:
+          ;   reconnect from the server browser so the server re-sends the cache from scratch.
+          cycle-on-runtime=false          ;true/false -> keep running and re-apply spray on a timer while the game is open
+          cycle-delay=60                  ;seconds between spray cycles when cycle-on-runtime=true (minimum 10)
+          "@
+          $iniContent | Out-File -FilePath "dist_zip\spraysettings.ini" -Encoding utf8
+          
+          Compress-Archive -Path dist_zip\* -DestinationPath "hlgraff_v$ver.zip" -Force
+
+          cp $exeFile.FullName .\hlgraff.exe
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: hlgraff Release v${{ steps.get_version.outputs.VERSION }}
+          files: |
+            hlgraff.exe
+            hlgraff_v${{ steps.get_version.outputs.VERSION }}.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

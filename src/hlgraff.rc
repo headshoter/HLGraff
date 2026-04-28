@@ -1,0 +1,45 @@
+#include "resource.h"
+#include <windows.h>
+
+#ifndef FILE_VERSION_STR
+#define FILE_VERSION_STR "1.0.0.0"
+#endif
+
+#ifndef PRODUCT_VERSION_STR
+#define PRODUCT_VERSION_STR "1.0.0.0"
+#endif
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION 1,0,0,0
+ PRODUCTVERSION 1,0,0,0
+ FILEFLAGSMASK 0x3fL
+#ifdef _DEBUG
+ FILEFLAGS 0x1L
+#else
+ FILEFLAGS 0x0L
+#endif
+ FILEOS 0x40004L
+ FILETYPE 0x1L
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040a04b0"
+        BEGIN
+            VALUE "CompanyName", "hlgraff-devteam"
+            VALUE "FileDescription", "Spray manager for goldsrc based games/mods"
+            VALUE "FileVersion", FILE_VERSION_STR
+            VALUE "InternalName", "hlgraff.exe"
+            VALUE "LegalCopyright", "Copyright (C) 2026"
+            VALUE "OriginalFilename", "hlgraff.exe"
+            VALUE "ProductName", "Spray Manager"
+            VALUE "ProductVersion", PRODUCT_VERSION_STR
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x40a, 1200
+    END
+END
+
+IDI_APP_ICON ICON "rsc\\icon.ico"

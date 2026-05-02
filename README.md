@@ -79,7 +79,7 @@ This software is capable of adjusting it's behavior by filename flags.
 
 <strong>_small</strong>/<strong>medium</strong>/<strong>large</strong> set's the output spray size.<br/>
 <strong>_static</strong> sets a specific image as static (ignores every other file in the folder)<br/>
-<strong>_f</strong><em>1/2/3/4/etc</em> (used for gif files and wad files with multiple textures) defines which frame is going to be used as a spray. (defaults to 0 if tag is not present, and to the last available frame if the defined frame is higher than the available frames present in the file)<br/>
+<strong>_f</strong><em>1/2/3/4/etc</em> (used for gif files) defines which frame is going to be used as a spray. (defaults to 0 if tag is not present, and to the last available frame if the defined frame is higher than the available frames present in the file)<br/>
 <strong>_game-</strong><em>cstrike/valve/ag/etc</em> sets the image as exclusive for said mod/game<br/>
 
 It is preferred that said flags are used at the end of the filename before the extension.<br/>

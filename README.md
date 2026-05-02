@@ -1,8 +1,31 @@
+
+
+
 <p align="center">
   <img src="https://res.cloudinary.com/df2kxvrua/image/upload/v1777349710/hlgraff_logo_text_banner_ankjay.png" alt="Banner" width="600">
 </p>
-HLGraff is a spray management launcher for GoldSrc engine games (Half-Life, Adrenaline Gamer,
-Counter-Strike, Team Fortress Classic, Day of Defeat, Sven Co-op, etc.).
+
+---
+
+<details>
+<summary>## What is hlgraff?</summary>
+In GoldSrc games (Half-Life, Counter-Strike, Day of Defeat, Sven Co-op and others), your spray is stored as a single file called `tempdecal.wad`. The game overwrites it with a default one every time you launch — so keeping a custom spray has always required manual steps.
+
+**hlgraff sits between your desktop shortcut and the game.** Every time you launch, it picks a spray from your collection, converts it if needed, places it where the game expects it, and then starts the game. The whole process takes milliseconds and is completely invisible.
+
+### What you get
+
+- **Drop any image and it just works.** PNG, JPG, BMP, GIF, TGA, TIFF — no external converters, no manual WAD editing.
+- **Automatic rotation.** Sequential, random (no-repeat), or always the same spray — your choice.
+- **High quality conversion.** Median-cut quantization and Floyd-Steinberg dithering keep gradients smooth even at 256 colors.
+- **Size control.** Three size modes affect how large the decal appears on walls in-game.
+- **Per-file name flags.** Set size, game target or GIF frame directly in the filename — no config needed.
+- **Mod-aware.** Works with any GoldSrc mod. Reads the `-game` argument and writes the spray to the right folder automatically.
+- **Smart caching.** Images are only reconverted when they actually change. SHA-256 hashing detects modifications automatically.
+- **Zero dependencies.** One `.exe`, no installer, no runtime libraries to hunt down.
+
+---
+</details>
 
 ## Installation (Half-Life & Mods)
 <details>

@@ -2714,8 +2714,3 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
         return 1;
     }
 }
-
-        showError("An unexpected error occurred.");
-        return 1;
-    }
-}

@@ -1,5 +1,3 @@
-
-
 #define NOMINMAX
 #include <windows.h>
 
@@ -27,6 +25,7 @@ inline T max(T a, T b) {
 #include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <limits>
 #include <random>
 #include <sstream>
@@ -193,7 +192,7 @@ void showError(const std::string& message) {
 //   _large / _medium / _small   — size override (overrides global size=)
 //   _static                     — this spray is always used (ignores method=)
 //   _game-<modname>             — restrict spray to a specific mod/game
-//   _f<N>                       — frame index for GIF or multi-texture WAD
+//   _f<N>                       — frame index for animated GIF
 //
 // Examples:
 //   "tag_large.png"              → size=large
@@ -708,22 +707,35 @@ LoadedImage loadTgaFile(const fs::path& tgaPath) {
     if (width == 0 || height == 0)
         throw std::runtime_error("TGA has zero dimensions: " + tgaPath.string());
 
-    // Bytes per pixel in the file: 3 (BGR) or 4 (BGRA) for colour;
-    // 1 byte for greyscale regardless of bpp field.
     bool isGrey = (imageType == 3 || imageType == 11);
     bool isRLE = (imageType == 10 || imageType == 11);
-    int  bytesPerPx = isGrey ? 1 : (bpp == 32 ? 4 : 3);
+    // Determine bytes per pixel from the bpp field.
+    // Supported: 32-bit BGRA, 24-bit BGR, 16-bit BGR555/BGR565, 8-bit grey.
+    // 16-bit TGA is uncommon but produced by some older tools.
+    int  bytesPerPx = isGrey ? 1 : (bpp == 32 ? 4 : (bpp == 16 ? 2 : 3));
 
     // Skip the image ID field.
     if (idLength > 0)
         f.seekg(idLength, std::ios::cur);
+
+    // Skip the colour map data if present (colorMapType == 1).
+    // cmSpec[0..1] = first entry index (uint16), cmSpec[2..3] = length (uint16),
+    // cmSpec[4]    = entry size in bits.
+    if (colorMapType == 1) {
+        std::uint16_t cmLength = static_cast<std::uint16_t>(cmSpec[2]) |
+            (static_cast<std::uint16_t>(cmSpec[3]) << 8);
+        std::uint8_t  cmEntryBits = cmSpec[4];
+        std::size_t   cmBytes = static_cast<std::size_t>(cmLength) *
+            ((cmEntryBits + 7) / 8);
+        if (cmBytes > 0)
+            f.seekg(static_cast<std::streamoff>(cmBytes), std::ios::cur);
+    }
 
     std::size_t pixelCount = static_cast<std::size_t>(width) * height;
     std::vector<RGBA> pixels(pixelCount);
 
     // ---- Decode pixels ----
     auto readPixel = [&](RGBA& out) {
-        // Reads one pixel from the file stream into `out`.
         std::uint8_t buf[4] = {};
         if (isGrey) {
             f.read(reinterpret_cast<char*>(buf), 1);
@@ -733,6 +745,23 @@ LoadedImage loadTgaFile(const fs::path& tgaPath) {
             f.read(reinterpret_cast<char*>(buf), 4);
             // TGA stores BGRA.
             out = { buf[2], buf[1], buf[0], buf[3] };
+        }
+        else if (bytesPerPx == 2) {
+            // 16-bit BGR555: XBBBBBGG GGGRRRRR (little-endian).
+            // Scale each 5-bit channel to 8-bit by shifting left 3 and
+            // replicating the top 3 bits into the bottom 3 (x * 255 / 31).
+            f.read(reinterpret_cast<char*>(buf), 2);
+            std::uint16_t px = static_cast<std::uint16_t>(buf[0]) |
+                (static_cast<std::uint16_t>(buf[1]) << 8);
+            std::uint8_t r5 = static_cast<std::uint8_t>(px & 0x1f);
+            std::uint8_t g5 = static_cast<std::uint8_t>((px >> 5) & 0x1f);
+            std::uint8_t b5 = static_cast<std::uint8_t>((px >> 10) & 0x1f);
+            out = {
+                static_cast<std::uint8_t>((r5 * 255) / 31),
+                static_cast<std::uint8_t>((g5 * 255) / 31),
+                static_cast<std::uint8_t>((b5 * 255) / 31),
+                0xff
+            };
         }
         else {
             f.read(reinterpret_cast<char*>(buf), 3);
@@ -1569,8 +1598,10 @@ namespace sha256 {
 // of the cached .wad — even when the source image bytes are identical.
 // It is loaded once at startup and written back whenever a change is detected.
 
-// Loads the entire hash store from disk into a map from filename → hex hash.
-// Returns an empty map if the file does not yet exist.
+// Loads the entire hash store from disk into a map from
+// "filename:sizemode:frameindex" → sha256hex.
+// After loading, removes any entries whose source file no longer
+// exists in SPRAYS_DIR so the store never accumulates stale entries.
 std::unordered_map<std::string, std::string> loadHashStore() {
     std::unordered_map<std::string, std::string> store;
     if (!fs::exists(HASH_FILE)) return store;
@@ -1578,14 +1609,14 @@ std::unordered_map<std::string, std::string> loadHashStore() {
     std::ifstream in(HASH_FILE);
     std::string   line;
     while (std::getline(in, line)) {
-        // Each non-empty line must contain a tab separator.
         std::size_t tab = line.find('\t');
         if (tab == std::string::npos) continue;
-        std::string filename = line.substr(0, tab);
+        std::string key = line.substr(0, tab);
         std::string hash = line.substr(tab + 1);
-        if (!filename.empty() && !hash.empty())
-            store[filename] = hash;
+        if (!key.empty() && !hash.empty())
+            store[key] = hash;
     }
+    in.close();
     return store;
 }
 
@@ -1598,144 +1629,95 @@ void saveHashStore(const std::unordered_map<std::string, std::string>& store) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// WAD MULTI-TEXTURE FRAME EXTRACTION
-// ---------------------------------------------------------------------------
+// Forward declaration — saveHashStore is defined immediately above but MSVC
+// precompiled header builds may not see it from this translation unit.
+void saveHashStore(const std::unordered_map<std::string, std::string>& store);
 
-// Parses a WAD3 file and extracts one texture by index as a LoadedImage.
-// `frameIndex` selects which texture entry to use (0 = first).  If the
-// index exceeds the number of textures in the file, the last texture is used.
-// Only WAD3 mip-texture entries (type 0x43) are counted; other entry types
-// (fonts, etc.) are skipped.
-//
-// The extracted texture is returned as a 32-bit RGBA image with alpha=255
-// for all pixels except the WAD transparency key colour (0,0,255) which is
-// mapped to alpha=0.
-LoadedImage loadWadFrame(const fs::path& wadPath, int frameIndex) {
-    std::ifstream f(wadPath, std::ios::binary);
-    if (!f)
-        throw std::runtime_error("Cannot open WAD: " + wadPath.string());
-
-    // ---- WAD3 file header ----
-    char magic[4] = {};
-    f.read(magic, 4);
-    if (std::string(magic, 4) != "WAD3")
-        throw std::runtime_error("Not a WAD3 file: " + wadPath.string());
-
-    std::uint32_t numEntries = 0;
-    std::uint32_t dirOffset = 0;
-    f.read(reinterpret_cast<char*>(&numEntries), 4);
-    f.read(reinterpret_cast<char*>(&dirOffset), 4);
-
-    if (numEntries == 0)
-        throw std::runtime_error("WAD contains no entries: " + wadPath.string());
-
-    // ---- Read directory ----
-    struct DirEntry {
-        std::uint32_t offset;
-        std::uint32_t diskSize;
-        std::uint32_t size;
-        std::uint8_t  type;
-        std::uint8_t  compressed;
-        std::uint16_t pad;
-        char          name[16];
-    };
-
-    f.seekg(dirOffset);
-    std::vector<DirEntry> dir(numEntries);
-    for (auto& e : dir) {
-        f.read(reinterpret_cast<char*>(&e.offset), 4);
-        f.read(reinterpret_cast<char*>(&e.diskSize), 4);
-        f.read(reinterpret_cast<char*>(&e.size), 4);
-        f.read(reinterpret_cast<char*>(&e.type), 1);
-        f.read(reinterpret_cast<char*>(&e.compressed), 1);
-        f.read(reinterpret_cast<char*>(&e.pad), 2);
-        f.read(e.name, 16);
-    }
-
-    // Collect only mip-texture entries (type 0x43).
-    std::vector<const DirEntry*> textures;
-    for (const auto& e : dir)
-        if (e.type == 0x43) textures.push_back(&e);
-
-    if (textures.empty())
-        throw std::runtime_error("WAD has no mip-texture entries: " + wadPath.string());
-
-    // Sort textures alphabetically by their internal name (case-insensitive)
-    // so that _f0 always refers to the alphabetically first texture, _f1 to
-    // the second, and so on — regardless of the order in which textures were
-    // inserted into the WAD file.
-    // Example: a WAD containing "wall01" and "dirt_renewed" always maps
-    //   _f0 → "dirt_renewed"  (d < w)
-    //   _f1 → "wall01"
-    std::sort(textures.begin(), textures.end(), [](const DirEntry* a, const DirEntry* b) {
-        // name fields are null-padded char[16]; compare as C strings,
-        // case-insensitively so "Grass" and "grass" sort together.
-        return _stricmp(a->name, b->name) < 0;
-        });
-
-    // Clamp frame index to last available texture.
-    int safeFrame = std::min(frameIndex, static_cast<int>(textures.size()) - 1);
-    const DirEntry* entry = textures[static_cast<std::size_t>(safeFrame)];
-
-    // ---- Read mip-texture header ----
-    f.seekg(entry->offset);
-    char texName[16] = {};
-    f.read(texName, 16);
-    std::uint32_t texWidth = 0;
-    std::uint32_t texHeight = 0;
-    f.read(reinterpret_cast<char*>(&texWidth), 4);
-    f.read(reinterpret_cast<char*>(&texHeight), 4);
-
-    if (texWidth == 0 || texHeight == 0)
-        throw std::runtime_error("WAD texture has zero dimensions.");
-
-    std::uint32_t mip0Offset = 0;
-    f.read(reinterpret_cast<char*>(&mip0Offset), 4);
-    // Skip mip offsets 1-3 (not needed).
-    f.seekg(entry->offset + mip0Offset);
-
-    // ---- Read mip level 0 index map ----
-    std::size_t pixelCount = static_cast<std::size_t>(texWidth) * texHeight;
-    std::vector<std::uint8_t> indices(pixelCount);
-    f.read(reinterpret_cast<char*>(indices.data()), static_cast<std::streamsize>(pixelCount));
-
-    // Skip mip1, mip2, mip3 to reach the palette.
-    std::size_t mip1 = pixelCount / 4;
-    std::size_t mip2 = pixelCount / 16;
-    std::size_t mip3 = pixelCount / 64;
-    f.seekg(static_cast<std::streamoff>(mip1 + mip2 + mip3), std::ios::cur);
-
-    // ---- Read 256-entry RGB palette ----
-    std::uint16_t palCount = 0;
-    f.read(reinterpret_cast<char*>(&palCount), 2);
-    std::vector<RGB> palette(256);
-    for (int i = 0; i < 256; ++i) {
-        f.read(reinterpret_cast<char*>(&palette[i].r), 1);
-        f.read(reinterpret_cast<char*>(&palette[i].g), 1);
-        f.read(reinterpret_cast<char*>(&palette[i].b), 1);
-    }
-
-    // ---- Decode index map to RGBA ----
-    // Palette index 255 is the GoldSrc transparency key (opaque blue → alpha 0).
-    LoadedImage image;
-    image.width = texWidth;
-    image.height = texHeight;
-    image.pixels.resize(pixelCount);
-    for (std::size_t i = 0; i < pixelCount; ++i) {
-        std::uint8_t idx = indices[i];
-        if (idx == 255) {
-            image.pixels[i] = { 0, 0, 0xff, 0 };
+// Removes entries from `store` whose source file no longer exists in SPRAYS_DIR.
+// Should be called on every spray list refresh (startup and each cycle-on-runtime
+// iteration) so that deleted files are cleaned up during execution.
+// Saves the store to disk only when at least one entry was removed.
+void cleanStaleHashEntries(std::unordered_map<std::string, std::string>& store) {
+    bool dirty = false;
+    auto it = store.begin();
+    while (it != store.end()) {
+        // Key format: "filename:sizemode:frameindex" — extract filename part.
+        const std::string& key = it->first;
+        std::size_t colon = key.find(':');
+        std::string sourceFile = (colon != std::string::npos)
+            ? key.substr(0, colon) : key;
+        if (!sourceFile.empty() && !fs::exists(SPRAYS_DIR / sourceFile)) {
+            it = store.erase(it);
+            dirty = true;
         }
         else {
-            image.pixels[i] = { palette[idx].r, palette[idx].g, palette[idx].b, 0xff };
+            ++it;
         }
     }
-
-    return image;
+    if (dirty) saveHashStore(store);
 }
 
-// ---------------------------------------------------------------------------
+// Removes orphaned converted .wad files whose source image no longer exists in
+// SPRAYS_DIR, and clears their related hash-store entries. This is called
+// during startup and on every runtime cycle so convert-autodeletion works even
+// when the sprays directory becomes empty.
+void cleanupOrphanedConvertedWads(std::unordered_map<std::string, std::string>& hashStore) {
+    if (!fs::exists(CONVERTED_DIR))
+        return;
+
+    try {
+        for (const auto& entry : fs::directory_iterator(CONVERTED_DIR)) {
+            if (!entry.is_regular_file()) continue;
+            if (getLowerExtension(entry.path()) != ".wad") continue;
+
+            std::string wadStem = entry.path().stem().string();
+            std::string sourceStem = wadStem;
+            for (const std::string& sz : { "_large", "_medium", "_small" }) {
+                std::string low = toLowerCopy(wadStem);
+                if (low.size() > sz.size() &&
+                    low.substr(low.size() - sz.size()) == sz)
+                {
+                    sourceStem = wadStem.substr(0, wadStem.size() - sz.size());
+                    break;
+                }
+            }
+
+            bool sourceGone = true;
+            std::vector<std::string> candidateStems = { sourceStem };
+            for (const std::string& sz : { "large", "medium", "small" })
+                candidateStems.push_back(sourceStem + "_" + sz);
+
+            for (const std::string& ext : {
+                    ".png", ".jpg", ".jpeg", ".bmp",
+                    ".gif", ".tiff", ".tif", ".tga", ".wad" }) {
+                for (const std::string& cs : candidateStems) {
+                    if (fs::exists(SPRAYS_DIR / (cs + ext))) {
+                        sourceGone = false;
+                        break;
+                    }
+                }
+                if (!sourceGone) break;
+            }
+
+            if (!sourceGone)
+                continue;
+
+            fs::remove(entry.path());
+            for (const std::string& ext : { ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tiff", ".tif", ".tga" }) {
+                for (const std::string& sz : { "large", "medium", "small" }) {
+                    for (int fr = 0; fr < 32; ++fr)
+                        hashStore.erase(sourceStem + ext + ":" + sz + ":" + std::to_string(fr));
+                }
+            }
+        }
+    }
+    catch (...) {
+        // Non-fatal: a cleanup failure must not block spray rotation.
+    }
+}
+
+
+
 // IMAGE-TO-WAD CONVERSION WITH HASH-BASED CHANGE DETECTION
 // ---------------------------------------------------------------------------
 
@@ -1766,74 +1748,42 @@ fs::path convertImageSprayToWad(
 
     fs::create_directories(CONVERTED_DIR);
 
-    // Each size mode gets its own cached .wad file (cleanStem_<mode>.wad) so
-    // that switching modes does not overwrite the previously cached version.
-    // If the source filename already carries a name flag (e.g. logo_small.jpg),
-    // we strip that flag from the stem before appending the mode suffix to
-    // avoid double-suffixes like "logo_small_small.wad".
-    // Examples:
-    //   "graffiti.png"   + mode "medium" → "graffiti_medium.wad"
-    //   "logo_small.jpg" + mode "small"  → "logo_small.wad"
-    std::string _cleanStem;
-    extractNameFlag(imagePath.filename(), _cleanStem);   // sets _cleanStem
-    // Include frame index in the cached filename when non-zero so that
-    // different frame selections for the same source file don't collide.
-    std::string cachedStem = _cleanStem + "_" + sizeMode;
-    if (frameIndex != 0) cachedStem += "_f" + std::to_string(frameIndex);
-    fs::path    wadName = fs::path(cachedStem).replace_extension(".wad");
+    // Derive the cached .wad filename from the original source stem with the
+    // size flag replaced by the effective sizeMode.  All other flags (_game-,
+    // _static, _f#) are preserved in the filename so that:
+    //   - samid-pelea_f1.gif  → samid-pelea_f1_large.wad
+    //   - samid-pelea_f5.gif  → samid-pelea_f5_large.wad
+    //   - spray_game-valve.jpg → spray_game-valve_large.wad
+    //   - logo_small.jpg      → logo_small.wad  (size flag replaced)
+    // This guarantees each source file has a unique cache entry with no
+    // collisions, and the orphan scanner can always recover the source
+    // filename by reversing only the sizeMode suffix.
+    // Declare wadName here so it is visible to the rest of the function.
+    fs::path wadName;
+    {
+        // Start from the original stem (no extension).
+        SprayFlags _pf = parseNameFlags(imagePath.filename());
+        std::string baseStem = imagePath.stem().string();
+        // If the original name had a size flag, strip just that suffix so we
+        // can append the effective sizeMode without a double-suffix.
+        if (!_pf.sizeMode.empty()) {
+            std::string suffix = "_" + _pf.sizeMode;
+            std::string low = toLowerCopy(baseStem);
+            if (low.size() > suffix.size() &&
+                low.substr(low.size() - suffix.size()) == suffix)
+            {
+                baseStem = baseStem.substr(0, baseStem.size() - suffix.size());
+            }
+        }
+        // Append the effective sizeMode.
+        std::string cachedStem = baseStem + "_" + sizeMode;
+        wadName = fs::path(cachedStem).replace_extension(".wad");
+    }
 
     // When convert-autodeletion is enabled, scan CONVERTED_DIR for .wad files
     // whose source images no longer exist and delete them before we proceed.
-    if (autoDeleteOrphans) {
-        try {
-            for (const auto& entry : fs::directory_iterator(CONVERTED_DIR)) {
-                if (!entry.is_regular_file()) continue;
-                if (getLowerExtension(entry.path()) != ".wad") continue;
-
-                // The cached .wad filename has the form  stem_<mode>.wad.
-                // Strip the known size-mode suffixes to recover the original
-                // image stem before checking whether the source still exists.
-                std::string wadStem = entry.path().stem().string();
-                std::string sourceStem = wadStem;
-                for (const std::string& sz : { "_large", "_medium", "_small" }) {
-                    std::string wadStemLow = toLowerCopy(wadStem);
-                    if (wadStemLow.size() > sz.size() &&
-                        wadStemLow.substr(wadStemLow.size() - sz.size()) == sz)
-                    {
-                        sourceStem = wadStem.substr(0, wadStem.size() - sz.size());
-                        break;
-                    }
-                }
-                bool sourceGone = true;
-                // Check all supported image extensions for the recovered source stem.
-                for (const std::string& ext : { ".png", ".jpg", ".jpeg" }) {
-                    if (fs::exists(SPRAYS_DIR / (sourceStem + ext))) {
-                        sourceGone = false;
-                        break;
-                    }
-                }
-                if (sourceGone) {
-                    // Remove the orphaned .wad and its hash store entry.
-                    // The store key format is: <imageFilename>:<sizeMode>
-                    // Reconstruct all possible keys for this cached wad file.
-                    fs::remove(entry.path());
-                    // Erase all possible (ext, size, frame) combinations.
-                    // Frame 0 uses no suffix; frames 1+ use :1, :2 etc.
-                    for (const std::string& ext : { ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tiff", ".tif", ".tga", ".wad" }) {
-                        for (const std::string& sz : { "large", "medium", "small" }) {
-                            for (int fr = 0; fr < 32; ++fr) {
-                                hashStore.erase(sourceStem + ext + ":" + sz + ":" + std::to_string(fr));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        catch (...) {
-            // Non-fatal: if cleanup fails for any reason, continue with the
-            // conversion so the primary function still succeeds.
-        }
-    }
+    if (autoDeleteOrphans)
+        cleanupOrphanedConvertedWads(hashStore);
 
     fs::path wadInConverted = CONVERTED_DIR / wadName;
 
@@ -1861,13 +1811,7 @@ fs::path convertImageSprayToWad(
 
     // Either the .wad does not exist, the source image was modified, the
     // size mode changed, or the frame index changed.  Re-convert.
-    // For WAD source files use the WAD frame extractor; for all other image
-    // formats use the GDI+ loader with frame selection.
-    LoadedImage image;
-    if (getLowerExtension(imagePath) == ".wad")
-        image = loadWadFrame(imagePath, frameIndex);
-    else
-        image = loadImageFile(imagePath, frameIndex);
+    LoadedImage image = loadImageFile(imagePath, frameIndex);
     std::vector<std::uint8_t> wad = convertTextureToTempdecal(
         image.pixels, image.width, image.height,
         false, // bilinear interpolation
@@ -1875,13 +1819,20 @@ fs::path convertImageSprayToWad(
     );
 
     // Write the new .wad to the converted directory.
-    std::ofstream out(wadInConverted, std::ios::binary);
-    if (!out) {
-        throw std::runtime_error("Could not create converted WAD: " + wadInConverted.string());
-    }
-    out.write(reinterpret_cast<const char*>(wad.data()), static_cast<std::streamsize>(wad.size()));
-    if (!out) {
-        throw std::runtime_error("Could not write converted WAD: " + wadInConverted.string());
+    // The ofstream is explicitly closed and checked before returning the path
+    // so that all data is guaranteed to be flushed to disk before applySpray
+    // tries to copy the file — on Windows, data may remain in kernel buffers
+    // if the destructor is relied upon for flushing.
+    {
+        std::ofstream out(wadInConverted, std::ios::binary);
+        if (!out) {
+            throw std::runtime_error("Could not create converted WAD: " + wadInConverted.string());
+        }
+        out.write(reinterpret_cast<const char*>(wad.data()), static_cast<std::streamsize>(wad.size()));
+        out.close();
+        if (!out) {
+            throw std::runtime_error("Could not write converted WAD: " + wadInConverted.string());
+        }
     }
 
     // Update the hash store so the next run knows this (file, size) combination
@@ -1922,6 +1873,12 @@ struct Config {
     // Interval in seconds between spray cycles when cycle_on_runtime is true.
     // Minimum clamped to 10 seconds to avoid hammering the filesystem.
     int         cycle_delay = 60;
+    // When true, custom.hpk in the mod folder is deleted before applying the
+    // spray if its size exceeds gamecache_size_kb kilobytes.
+    bool        gamecache_autoclear = true;
+    // Maximum allowed size of custom.hpk in kilobytes before it is cleared.
+    // Minimum clamped to 18 KB (approximately one full spray entry).
+    int         gamecache_size_kb = 100;
 };
 
 // ---------------------------------------------------------------------------
@@ -1979,6 +1936,16 @@ static const std::vector<IniEntry> INI_ENTRIES = {
         "true/false -> auto-delete converted wads when source image is gone",
         {}
     },
+    {
+        "gamecache-autoclear", "true",
+        "true/false -> delete custom.hpk when it exceeds gamecache-size to improve spray stability",
+        {}
+    },
+    {
+        "gamecache-size", "100",
+        "max size in KB of custom.hpk before it is cleared (minimum 18)",
+        {}
+    },
     // ---- Experimental cycle settings (separated by blank lines) ----
     {
         "cycle-on-runtime", "false",
@@ -1989,7 +1956,7 @@ static const std::vector<IniEntry> INI_ENTRIES = {
             "; [EXPERIMENTAL] servers cache sprays in custom.hpk so the change is not always",
             ";   visible immediately. retry/rejoin to the same server may not reflect the new",
             ";   spray. for best results:",
-            ";   reconnect from the server browser so the server re-sends the cache from scratch."
+            ";   reconnect from the server browser so the server re-builds it's cache again (not always does so)."
         }
     },
     {
@@ -2104,6 +2071,15 @@ Config loadConfig() {
         cfg.size = v.empty() ? "large" : v;
     }
     cfg.convert_autodeletion = (toLowerCopy(get("convert-autodeletion")) == "true");
+    cfg.gamecache_autoclear = (toLowerCopy(get("gamecache-autoclear")) == "true");
+    {
+        try {
+            cfg.gamecache_size_kb = std::max(18, std::stoi(get("gamecache-size")));
+        }
+        catch (...) {
+            cfg.gamecache_size_kb = 100;
+        }
+    }
     cfg.cycle_on_runtime = (toLowerCopy(get("cycle-on-runtime")) == "true");
     {
         try {
@@ -2164,8 +2140,10 @@ std::string getLastSpray() {
     return s;
 }
 
-// Reads the second line of the state file and parses it as a space-separated
-// list of spray names representing the remaining shuffle deck.
+// Reads the second line of the state file and parses it as a whitespace-
+// separated list of quoted spray names representing the remaining shuffle
+// deck. std::quoted keeps filenames with spaces intact while remaining
+// backward-compatible with older unquoted entries.
 std::vector<std::string> getShuffleDeck() {
     if (!fs::exists(STATE_FILE)) return {};
     std::ifstream     f(STATE_FILE);
@@ -2177,23 +2155,23 @@ std::vector<std::string> getShuffleDeck() {
     deckLine = trim(deckLine);
     if (deckLine.empty()) return {};
 
-    // Tokenise on spaces.
+    // Tokenise using std::quoted so filenames with spaces survive round-trips.
     std::vector<std::string> deck;
     std::istringstream       ss(deckLine);
     std::string              token;
-    while (ss >> token)
+    while (ss >> std::quoted(token))
         deck.push_back(token);
     return deck;
 }
 
-// Writes `lastSpray` as line 1 and `deck` as a space-separated list on
-// line 2 to the state file, replacing any previous content.
+// Writes `lastSpray` as line 1 and `deck` as a quoted, whitespace-separated
+// list on line 2 to the state file, replacing any previous content.
 void saveState(const std::string& lastSpray, const std::vector<std::string>& deck) {
     std::ofstream f(STATE_FILE);
     f << lastSpray << '\n';
     for (std::size_t i = 0; i < deck.size(); ++i) {
         if (i > 0) f << ' ';
-        f << deck[i];
+        f << std::quoted(deck[i]);
     }
     f << '\n';
 }
@@ -2274,6 +2252,11 @@ std::string chooseSpray(const Config& cfg, const std::vector<std::string>& spray
     }
 
     std::string last = getLastSpray();
+    // If the last spray no longer exists in the eligible list (e.g. the file
+    // was deleted or its _game- flag no longer matches), clear it so stale
+    // state does not affect selection logic or shuffle seeding.
+    if (!last.empty() && !findSprayName(eligible, last))
+        last = "";
 
     // ---- RANDOM mode (no-repeat shuffle deck) ----
     if (cfg.method == "random") {
@@ -2292,27 +2275,36 @@ std::string chooseSpray(const Config& cfg, const std::vector<std::string>& spray
         // If the deck is exhausted (or was just cleared), build a new full
         // shuffle of all available sprays so the next cycle begins.
         if (deck.empty()) {
-            deck = eligible; // copy the eligible filtered list
+            deck = eligible;
 
-            // Fisher-Yates shuffle seeded with the current time combined with
-            // a hash of the last spray name for additional entropy, ensuring
-            // different shuffles even when launched in rapid succession.
-            std::size_t seed = static_cast<std::size_t>(time(NULL));
-            for (const char c : last)
-                seed ^= static_cast<std::size_t>(c) + 0x9e3779b9u + (seed << 6) + (seed >> 2);
+            // Seed the RNG with std::random_device (BCryptGenRandom on Windows)
+            // as the primary entropy source, mixed with time and the last spray
+            // name as additional salt.  This guarantees distinct shuffles even
+            // when two cycles complete the deck within the same second — a
+            // common scenario in cycle-on-runtime mode.
+            {
+                std::random_device rd;
+                std::size_t seed = static_cast<std::size_t>(rd());
+                seed ^= static_cast<std::size_t>(time(NULL)) * 0x9e3779b9u;
+                for (const char c : last)
+                    seed ^= static_cast<std::size_t>(c) + 0x9e3779b9u + (seed << 6) + (seed >> 2);
 
-            std::mt19937 rng(static_cast<unsigned>(seed));
-            for (std::size_t i = deck.size() - 1; i > 0; --i) {
-                // Generate a uniform random index in [0, i].
-                std::uniform_int_distribution<std::size_t> dist(0, i);
-                std::swap(deck[i], deck[dist(rng)]);
-            }
+                std::mt19937 rng(static_cast<unsigned>(seed));
+                for (std::size_t i = deck.size() - 1; i > 0; --i) {
+                    std::uniform_int_distribution<std::size_t> dist(0, i);
+                    std::swap(deck[i], deck[dist(rng)]);
+                }
 
-            // If the first entry of the new shuffle matches the spray that was
-            // just applied, rotate the deck by one position to avoid an
-            // immediate consecutive repeat at the cycle boundary.
-            if (deck.size() > 1 && equalsIgnoreCase(deck.front(), last)) {
-                std::rotate(deck.begin(), deck.begin() + 1, deck.end());
+                // If the first entry matches the last applied spray, move it
+                // to a random position deeper in the deck using fresh entropy
+                // from the same RNG — avoids a repeat at the cycle boundary.
+                if (deck.size() > 1 && equalsIgnoreCase(deck.front(), last)) {
+                    std::uniform_int_distribution<std::size_t> dist2(1, deck.size() - 1);
+                    std::size_t pos = dist2(rng);
+                    std::string front = deck.front();
+                    deck.erase(deck.begin());
+                    deck.insert(deck.begin() + static_cast<std::ptrdiff_t>(pos), front);
+                }
             }
         }
 
@@ -2379,13 +2371,6 @@ std::string detectMod(const std::vector<std::string>& args) {
 
 // ---------------------------------------------------------------------------
 // SPRAY FILE RESOLUTION
-// ---------------------------------------------------------------------------
-
-// Given a spray name (filename as returned by getSprays()), this function
-// returns the path of the .wad file to copy as tempdecal.wad.  For .wad
-// sprays the path is returned directly.  For image sprays the conversion
-// pipeline is invoked (with hash-change detection) and the resulting path
-// inside CONVERTED_DIR is returned.
 fs::path resolveSprayFile(
     const std::string& sprayName,
     const std::string& sizeMode,
@@ -2403,12 +2388,11 @@ fs::path resolveSprayFile(
     // Determine effective size mode: flag overrides global INI setting.
     const std::string& effectiveSizeMode = flags.sizeMode.empty() ? sizeMode : flags.sizeMode;
 
-    // Plain .wad with no _f flag and no size flag: return as-is (no conversion).
-    // .wad with a _f flag (multi-texture selection): run through conversion pipeline.
-    if (getLowerExtension(selected) == ".wad" && flags.frameIndex == 0 && flags.sizeMode.empty())
+    // .wad files are used directly as tempdecal.wad without conversion.
+    if (getLowerExtension(selected) == ".wad")
         return selected;
 
-    if (!isImageSprayExtension(selected) && getLowerExtension(selected) != ".wad") {
+    if (!isImageSprayExtension(selected)) {
         throw std::runtime_error("Unsupported spray format: " + selected.string());
     }
 
@@ -2420,46 +2404,63 @@ fs::path resolveSprayFile(
 // APPLY SPRAY
 // ---------------------------------------------------------------------------
 
-// Returns true when the two files are byte-for-byte identical.
-// Strategy: compare file sizes first (cheap), then SHA-256 hashes only when
-// sizes match.  This avoids hashing large files that differ in size.
-bool filesAreIdentical(const fs::path& a, const fs::path& b) {
+// Copies the chosen spray .wad to <gameDir>/<mod>/tempdecal.wad.
+// The file is always re-copied, even when the source path or contents are the
+// same as the previous cycle. This keeps the runtime behaviour consistent
+// across all supported image formats: resolve cache, then apply that cache as
+// tempdecal.wad on every cycle.
+// The destination is temporarily set to normal attributes before overwriting
+// (GoldSrc marks tempdecal.wad read-only), then re-marked read-only afterwards
+// so the engine does not clobber it.
+// Clears custom.hpk in the mod folder if it exceeds the configured size limit.
+// custom.hpk is the server-side spray cache used by GoldSrc; clearing it forces
+// the server to re-fetch sprays, improving the chance that the new spray is
+// visible without requiring a full reconnect.
+void clearGameCacheIfNeeded(const fs::path& gameDir, const std::string& mod, int maxSizeKb) {
+    fs::path hpk = gameDir / mod / "custom.hpk";
+    if (!fs::exists(hpk)) return;
     std::error_code ec;
-    auto sizeA = fs::file_size(a, ec); if (ec) return false;
-    auto sizeB = fs::file_size(b, ec); if (ec) return false;
-    if (sizeA != sizeB) return false;
-    // Same size: compare hashes to rule out hash collisions from coincidental
-    // size matches (extremely unlikely for WAD files but correct to check).
-    return sha256::hashFile(a) == sha256::hashFile(b);
+    auto sizeBytes = fs::file_size(hpk, ec);
+    if (ec) return;
+    // Convert KB threshold to bytes for comparison.
+    std::uintmax_t limitBytes = static_cast<std::uintmax_t>(maxSizeKb) * 1024;
+    if (sizeBytes > limitBytes) {
+        // Clear the read-only attribute in case GoldSrc set it, then delete.
+        SetFileAttributesA(hpk.string().c_str(), FILE_ATTRIBUTE_NORMAL);
+        fs::remove(hpk, ec); // non-fatal if removal fails
+    }
 }
 
-// Copies the chosen spray .wad to <gameDir>/<mod>/tempdecal.wad.
-// The copy is skipped entirely when the destination already contains the
-// exact same file — this prevents redundant disk writes in cycle-on-runtime
-// mode when only one spray is available, or in static mode when the spray
-// has not changed since the last application.
-// When a copy is necessary the destination is temporarily set to normal
-// attributes before overwriting (GoldSrc marks tempdecal.wad read-only),
-// then re-marked read-only afterwards so the engine does not clobber it.
-void applySpray(const fs::path& sprayPath, const fs::path& gameDir, const std::string& mod) {
+void applySpray(const fs::path& sprayPath, const fs::path& gameDir,
+    const std::string& mod, bool gamecacheAutoclear, int gamecacheSizeKb) {
     fs::path dstDir = gameDir / mod;
 
     // Ensure the mod directory exists (important for newly installed mods).
     if (!fs::exists(dstDir))
         fs::create_directories(dstDir);
 
+    // Clear custom.hpk if it has grown beyond the configured threshold.
+    // This is done before writing tempdecal.wad so the engine picks up the
+    // new spray on the next map load or reconnect.
+    if (gamecacheAutoclear)
+        clearGameCacheIfNeeded(gameDir, mod, gamecacheSizeKb);
+
     fs::path dst = dstDir / "tempdecal.wad";
 
-    // Skip the copy if the destination already contains this exact spray.
-    // This is the common case in static mode and single-spray collections.
-    if (fs::exists(dst) && filesAreIdentical(sprayPath, dst))
-        return;
-
-    // Clear the read-only flag so the copy can overwrite the destination.
-    if (fs::exists(dst))
+    // Always clear read-only before replacing the file.
+    if (fs::exists(dst)) {
         SetFileAttributesA(dst.string().c_str(), FILE_ATTRIBUTE_NORMAL);
+    }
 
-    // Copy the selected spray, overwriting any existing tempdecal.wad.
+    // Remove the destination file entirely before copying.
+    // We delete rather than overwrite to avoid any race between attribute
+    // changes and the copy operation on Windows.
+    {
+        std::error_code ec;
+        fs::remove(dst, ec); // non-fatal if already gone
+    }
+
+    // Copy the selected spray to the (now absent) destination path.
     fs::copy_file(sprayPath, dst, fs::copy_options::overwrite_existing);
 
     // Re-mark as read-only so GoldSrc does not replace it with the default
@@ -2600,6 +2601,9 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
         // This is shared between the spray-resolution call below and any
         // auto-deletion pass run inside convertImageSprayToWad.
         auto hashStore = loadHashStore();
+        cleanStaleHashEntries(hashStore);
+        if (cfg.convert_autodeletion)
+            cleanupOrphanedConvertedWads(hashStore);
 
         // ---- Determine the target mod directory ----
         // When include-mods=false we always write to "valve" regardless of
@@ -2615,7 +2619,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
             fs::path sprayPath = resolveSprayFile(
                 chosen, cfg.size, cfg.convert_autodeletion, hashStore
             );
-            applySpray(sprayPath, gameDir, mod);
+            applySpray(sprayPath, gameDir, mod, cfg.gamecache_autoclear, cfg.gamecache_size_kb);
         }
 
         // ---- Launch the game ----
@@ -2658,16 +2662,24 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
             // game is still running.
 
             // Reload the spray list in case files were added or removed.
-            auto cyclesprays = getSprays();
-            if (cyclesprays.empty())
-                continue;
-
-            // Reload the hash store so any images modified during the session
-            // are detected and their cached .wad is rebuilt.
+            // Reload the hash store and clean stale entries.
             auto cycleHashStore = loadHashStore();
+            cleanStaleHashEntries(cycleHashStore);
 
-            // Choose the next spray using the same selection logic as on
-            // startup — this advances the sequential/random state correctly.
+            // Run orphan deletion on every cycle, regardless of cache hits.
+            // This ensures converted/ stays clean even when all source files
+            // are TGA/BMP (which hit the cache and skip the orphan scan inside
+            // convertImageSprayToWad).
+            if (cfg.convert_autodeletion)
+                cleanupOrphanedConvertedWads(cycleHashStore);
+
+            auto cyclesprays = getSprays();
+            if (cyclesprays.empty()) {
+                saveHashStore(cycleHashStore);
+                continue;
+            }
+
+            // Choose the next spray.
             std::string cycleChosen = chooseSpray(cfg, cyclesprays, mod);
             if (cycleChosen.empty())
                 continue;
@@ -2676,12 +2688,17 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
                 fs::path cycleSprayPath = resolveSprayFile(
                     cycleChosen, cfg.size, cfg.convert_autodeletion, cycleHashStore
                 );
-                applySpray(cycleSprayPath, gameDir, mod);
+                saveHashStore(cycleHashStore);
+
+                applySpray(cycleSprayPath, gameDir, mod, cfg.gamecache_autoclear, cfg.gamecache_size_kb);
             }
             catch (const std::exception& ex) {
-                // Non-fatal: log to a message box would be intrusive mid-game,
-                // so we silently skip this cycle and try again on the next one.
-                (void)ex;
+                saveHashStore(cycleHashStore);
+                try {
+                    std::ofstream log(BASE_DIR / "hlgraff_errors.log", std::ios::app);
+                    log << ex.what() << "\n";
+                }
+                catch (...) {}
             }
         }
 
@@ -2693,6 +2710,11 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
         return 1;
     }
     catch (...) {
+        showError("An unexpected error occurred.");
+        return 1;
+    }
+}
+
         showError("An unexpected error occurred.");
         return 1;
     }

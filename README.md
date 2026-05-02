@@ -7,9 +7,8 @@
 
 ---
 
-<details>
-<summary>## What is hlgraff?</summary>
-In GoldSrc games (Half-Life, Counter-Strike, Day of Defeat, Sven Co-op and others), your spray is stored as a single file called `tempdecal.wad`. The game overwrites it with a default one every time you launch — so keeping a custom spray has always required manual steps.
+## What is HLGraff?
+In GoldSrc games (Half-Life, Counter-Strike, Day of Defeat, Sven Co-op and others), your spray is stored as a single file called `tempdecal.wad`. The game overwrites it with a default one every time you launch — so keeping a custom spray has always required manual steps and a bunch of programs to create em.
 
 **hlgraff sits between your desktop shortcut and the game.** Every time you launch, it picks a spray from your collection, converts it if needed, places it where the game expects it, and then starts the game. The whole process takes milliseconds and is completely invisible.
 
@@ -25,7 +24,6 @@ In GoldSrc games (Half-Life, Counter-Strike, Day of Defeat, Sven Co-op and other
 - **Zero dependencies.** One `.exe`, no installer, no runtime libraries to hunt down.
 
 ---
-</details>
 
 ## Installation (Half-Life & Mods)
 <details>

@@ -58,7 +58,7 @@ Drop your desired images into the <strong>sprays</strong> folder <em>(See suppor
 
 | Format | Extension(s) | Loader | Notes |
 |---|---|---|---|
-| WAD3 | `.wad` | Native parser | Single-texture: used directly. Multi-texture: frame selected by `_f` flag. |
+| WAD3 | `.wad` | Native parser | Single-texture [TAG ready]: used directly |
 | PNG | `.png` | GDI+ | Full alpha support. |
 | JPEG | `.jpg`, `.jpeg` | GDI+ | No alpha (all pixels treated as opaque). |
 | BMP | `.bmp` | GDI+ | Windows Bitmap. |
@@ -125,7 +125,7 @@ Files without tags will be used respecting the global settings defined in <font 
     ├── logo_small_f2.gif
     ├── banner_game-cstrike.jpg
     ├── main_static.tga
-    ├── textures.wad
+    ├── my-premade-custom-spray.wad
     └── converted/
         ├── graffiti_large_0.wad
         ├── logo_small_0.wad

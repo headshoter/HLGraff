@@ -64,7 +64,7 @@ Drop your desired images into the <strong>sprays</strong> folder <em>(See suppor
 | BMP | `.bmp` | GDI+ | Windows Bitmap. |
 | GIF | `.gif` | GDI+ | frame selected by `_f` flag. Default: frame 0. |
 | TIFF | `.tiff`, `.tif` | GDI+ | |
-| Targa | `.tga` | Custom loader | Supports uncompressed (type 2/3) and RLE (type 10/11), 24-bit and 32-bit, bottom-up and top-down.|
+| Targa | `.tga` | Custom loader | Supports uncompressed (type 2/3) and RLE (type 10/11), 16-bit, 24-bit and 32-bit, bottom-up and top-down.|
 
 </details>
 

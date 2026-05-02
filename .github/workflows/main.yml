@@ -41,7 +41,6 @@ jobs:
           
           $exeFile = Get-ChildItem -Path "src" -Filter "hlgraff.exe" -Recurse | Select-Object -First 1
           if (-not $exeFile) { Write-Error "No se encontró hlgraff.exe"; exit 1 }
-
           mkdir dist_zip
           mkdir dist_zip\sprays
           
@@ -65,9 +64,91 @@ jobs:
           cycle-delay=60                  ;seconds between spray cycles when cycle-on-runtime=true (minimum 10)
           "@
           $iniContent | Out-File -FilePath "dist_zip\spraysettings.ini" -Encoding utf8
+
+          $readmeContent = @"
+          hlgraff - GoldSrc Spray Manager
+          ================================
+          
+          Selects, converts and applies custom spray decals before launching
+          GoldSrc engine games (Half-Life, Counter-Strike, Day of Defeat,
+          Sven Co-op, and any mod based on the GoldSrc engine).
+          
+          
+          INSTALLATION
+          ------------
+          Extract hlgraff.exe into your game root folder so it sits next
+          to hl.exe (or svencoop.exe for Sven Co-op).
+          
+            Example: C:\Program Files (x86)\Steam\steamapps\common\Half-Life\
+          
+          Create a shortcut to hlgraff.exe and add the -game flag for your mod:
+          
+            Half-Life          hlgraff.exe -game valve
+            Counter-Strike     hlgraff.exe -game cstrike
+            Day of Defeat      hlgraff.exe -game dod
+            Team Fortress      hlgraff.exe -game tfc
+            The Specialists    hlgraff.exe -game ts
+            Adrenaline Gamer   hlgraff.exe -game ag
+            Earth's Spec. F.   hlgraff.exe -game esf
+            Sven Co-op         hlgraff.exe -game svencoop
+          
+          Any mod is supported -- use its folder name as the -game value.
+          
+          For Sven Co-op, also open spraysettings.ini and change:
+            launch=hl.exe  ->  launch=svencoop.exe
+          
+          
+          SPRAYS
+          ------
+          Place your spray files inside the sprays\ folder:
+          
+            Supported formats: WAD, PNG, JPG, JPEG, BMP, GIF, TIFF, TGA
+          
+          No conversion needed. Drop any image and it is converted
+          automatically on the next launch.
+          
+          You can also give files special name flags before the extension:
+          
+            _large / _medium / _small    controls spray size
+            _static                      this spray is always used
+            _game-cstrike                only used in that specific mod
+            _f1 / _f2 / _f3 ...         selects a frame from an animated GIF
+          
+          Flags can be combined in any order:
+            spray_game-cstrike_small.png
+            anim_f3_medium_game-ts.gif
+          
+          
+          CONFIGURATION (spraysettings.ini)
+          ----------------------------------
+          The file is created automatically on first run.
+          Open it with any text editor to adjust settings.
+          
+            method=sequential      rotation order: sequential / random / static
+            sprayname=             filename to use when method=static
+            size=large             default size: large / medium / small
+            include-mods=true      apply spray to the active mod folder
+            launch=hl.exe          game executable to launch
+            convert-autodeletion=true   remove cached sprays with no source file
+            gamecache-autoclear=true    clear custom.hpk when it grows too large
+            gamecache-size=100     max size of custom.hpk in KB before clearing
+          
+            cycle-on-runtime=false [EXPERIMENTAL]
+              Keep hlgraff running and rotate sprays every cycle-delay seconds
+              while the game is open. Spray visibility depends on the server
+              cache (custom.hpk) -- reconnect from the server browser if 
+              the spray does not update in-game.
+          
+            cycle-delay=60         seconds between rotations (minimum 10)
+          
+          
+          REQUIREMENTS
+          ------------
+          Windows 7 or later.
+          "@
+          $readmeContent | Out-File -FilePath "dist_zip\readme.txt" -Encoding utf8
           
           Compress-Archive -Path dist_zip\* -DestinationPath "hlgraff_v$ver.zip" -Force
-
           cp $exeFile.FullName .\hlgraff.exe
 
       - name: Create Release

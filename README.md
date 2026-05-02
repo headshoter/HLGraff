@@ -314,7 +314,6 @@ forward compatibility with future flags.
 | `spray_game-cstrike.png` | from INI | no | cstrike only | — |
 | `main_static_game-valve.png` | from INI | yes | valve only | — |
 | `anim_f3_medium_game-ts.gif` | medium | no | ts only | 3 |
-| `textures_f1.wad` | from INI | no | all | 1 (alphabetical) |
 
 ### Cache Filename Format
 
@@ -358,11 +357,6 @@ The source is loaded into a 32-bit RGBA pixel buffer:
 - **TGA**: decoded by the custom TGA loader supporting uncompressed (types 2/3)
   and RLE-compressed (types 10/11) variants, 24-bit and 32-bit depth. Bottom-up
   images (TGA default) are flipped to top-down on load.
-- **WAD3 multi-texture**: the WAD directory is parsed, type-0x43 (mip-texture)
-  entries are collected and sorted alphabetically by internal texture name,
-  then the entry at the requested frame index is decoded using its embedded
-  palette. WAD palette index 255 (the GoldSrc transparency key, opaque blue)
-  is mapped to alpha=0.
 
 ### 3. Proportional Resize
 
